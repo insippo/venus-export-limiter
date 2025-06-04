@@ -1,0 +1,13 @@
+[Unit]
+Description=Venus Export Limiter
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /data/dbus-limit/limit-control.py
+WorkingDirectory=/data/dbus-limit
+StandardOutput=append:/data/dbus-limit/limit.log
+StandardError=append:/data/dbus-limit/limit.log
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
