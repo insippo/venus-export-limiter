@@ -2,27 +2,37 @@
 
 set -e
 
-echo "📦 Paigaldan Venus Export Limiter'i..."
-
+REPO_URL="https://github.com/insippo/venus-export-limiter.git"
 INSTALL_DIR="/data/dbus-limit"
 SERVICE_NAME="venus-export-limiter.service"
 
-# Loo sihtkaust
-mkdir -p $INSTALL_DIR
+echo "📦 Kloonime reposid ja paigaldame..."
 
-# Kopeeri failid
-cp config.py limit-control.py $INSTALL_DIR/
-cp systemd/$SERVICE_NAME /etc/systemd/system/
+# Loo sihtkaust kui ei eksisteeri
+mkdir -p /data
+
+# Klooni või uuenda repo
+if [ -d "$INSTALL_DIR/.git" ]; then
+    echo "📁 Repo juba olemas, tõmbame uuendused..."
+    cd "$INSTALL_DIR"
+    git pull
+else
+    echo "📥 Kloonime uue repo..."
+    git clone "$REPO_URL" "$INSTALL_DIR"
+fi
+
+cd "$INSTALL_DIR"
 
 # Sea õigused
-chmod +x $INSTALL_DIR/limit-control.py
+chmod +x limit-control.py
+touch limit.log
+chown root:root limit.log
 
-# Loo logifail kui vaja
-touch $INSTALL_DIR/limit.log
-chown root:root $INSTALL_DIR/limit.log
+# Kopeeri systemd teenuse fail
+cp systemd/$SERVICE_NAME /etc/systemd/system/
 
-# Luba ja käivita teenus
+# Lae systemd uuesti ja käivita teenus
 systemctl daemon-reexec
 systemctl enable --now $SERVICE_NAME
 
-echo "✅ Paigaldus valmis. Teenus käivitati."
+echo "✅ Paigaldus lõpetatud. Teenus töötab."
