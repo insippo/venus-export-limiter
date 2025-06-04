@@ -10,17 +10,23 @@
 See projekt piirab Victron Venus OS-is võrku eksporditavat võimsust, arvestades PV toodangut ja Multiplus väljundit.  
 Kui võrku suunduv võimsus ületab `MAX_EXPORT_LIMIT_W`, siis skript vähendab Multiplus väljundit, et püsida lubatud piiris.
 
-## 🚀 Kiire paigaldus
+## ⚠️ HOIATUS
+
+**Kui kasutad seda valesti või vales seadmes, võib see rikkuda Venus OS-i töö. Ära paigalda seda süsteemi, millest sa aru ei saa.**  
+Skripti võib täiesti valesti seadistatuna kasutada nagu "lunarahaviirust", mis katkestab energiavoogu või piirab Multiplus väljundit nulli.
+
+**KASUTA OMAL VASTUTUSEL.**
+
+## 🚀 Kiire automaatne paigaldus
 
 ```bash
-git clone git@github.com:insippo/venus-export-limiter.git /data/dbus-limit
-cd /data/dbus-limit
-python3 limit-control.py
+wget https://raw.githubusercontent.com/insippo/venus-export-limiter/master/install.sh
+bash install.sh
 ```
 
-Soovi korral lisa systemd teenus (vt allpool).
+See kloonib repo `/data/dbus-limit` alla, seab õigused, paigaldab systemd teenuse ja käivitab selle.
 
-## ⚙️ Seadistamine
+## ⚙️ Käsitsi seadistamine
 
 Muuda `config.py` vastavalt oma süsteemile:
 
