@@ -38,32 +38,48 @@ def validate_config():
 
 validate_config()
 
-# Globaalne muutuja viimase piirangu jälgimiseks
+# Globaalsed muutujad
 last_limit = None
+system_bus = None
+dbus_objects_cache = {}
+
+def get_system_bus():
+    """Tagastab püsiva DBus ühenduse"""
+    global system_bus
+    if system_bus is None:
+        system_bus = dbus.SystemBus()
+    return system_bus
+
+def get_dbus_interface(service, path, interface='com.victronenergy.BusItem'):
+    """Tagastab cache'itud DBus liidese"""
+    global dbus_objects_cache
+    cache_key = f"{service}:{path}:{interface}"
+    
+    if cache_key not in dbus_objects_cache:
+        try:
+            bus = get_system_bus()
+            obj = bus.get_object(service, path)
+            iface = dbus.Interface(obj, dbus_interface=interface)
+            dbus_objects_cache[cache_key] = iface
+        except Exception as e:
+            logging.debug(f"DBus liidese loomine ebaõnnestus {cache_key}: {e}")
+            return None
+    
+    return dbus_objects_cache.get(cache_key)
 
 def get_current_ess_limit():
-    """Loeb praeguse ESS piirangu"""
+    """Loeb praeguse ESS piirangu kasutades cache'itud DBus liidest"""
     try:
-        cmd = [
-            "dbus-send", "--system", "--print-reply",
-            "--dest=com.victronenergy.settings",
-            "/Settings/CGwacs/AcPowerSetPoint",
-            "com.victronenergy.BusItem.GetValue"
-        ]
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-        # Parse DBus vastust
-        for line in result.stdout.split('\n'):
-            if 'int32' in line:
-                value = int(line.split()[-1])
-                return value
+        iface = get_dbus_interface('com.victronenergy.settings', '/Settings/CGwacs/AcPowerSetPoint')
+        if iface:
+            value = int(iface.GetValue())
+            return value
         return None
     except Exception as e:
         logging.debug(f"Ei saanud praegust ESS piirangut lugeda: {e}")
         return None
 
 def get_export_power():
-    bus = dbus.SystemBus()
-    
     # Try common grid meter device paths
     grid_devices = [
         'com.victronenergy.grid.cgwacs_ttyUSB0_di30_mb1',
@@ -75,12 +91,12 @@ def get_export_power():
     
     for device in grid_devices:
         try:
-            obj = bus.get_object(device, '/Ac/Power')
-            iface = dbus.Interface(obj, dbus_interface='com.victronenergy.BusItem')
-            result = iface.GetValue()
-            exported_power = float(result)
-            logging.info(f"Loetud eksportvõimsus: {exported_power} W (seade: {device})")
-            return exported_power
+            iface = get_dbus_interface(device, '/Ac/Power')
+            if iface:
+                result = iface.GetValue()
+                exported_power = float(result)
+                logging.info(f"Loetud eksportvõimsus: {exported_power} W (seade: {device})")
+                return exported_power
         except Exception:
             continue
     
@@ -90,7 +106,7 @@ def get_export_power():
 def set_vebus_output_limit(limit_watts):
     """
     Seab Multiplus väljundpiirangu kasutades ESS seadeid.
-    Negatiivne väärtus = laadimispiirang, positiivne = tühjendusp piirang
+    Kasutab otse Python DBus teeki kiiruse huvides.
     """
     global last_limit
     
@@ -108,84 +124,101 @@ def set_vebus_output_limit(limit_watts):
     # Salvesta viimane piirang
     last_limit = limit_watts
     
+    bus = get_system_bus()
+    
     try:
-        # Kasuta ESS seadeid, mitte otse VEBus käske
-        # AcPowerSetPoint määrab maksimaalse AC väljundvõimsuse
-        cmd = [
-            "dbus-send", "--system", "--print-reply",
-            "--dest=com.victronenergy.settings",
-            "/Settings/CGwacs/AcPowerSetPoint",
-            "com.victronenergy.BusItem.SetValue",
-            f"variant:int32:{int(limit_watts)}"
+        # Esimene meetod: AcPowerSetPoint (põhiline ESS seade)
+        iface = get_dbus_interface('com.victronenergy.settings', '/Settings/CGwacs/AcPowerSetPoint')
+        if iface:
+            iface.SetValue(dbus.Int32(int(limit_watts)))
+            logging.info(f"ESS AcPowerSetPoint seatud: {limit_watts} W")
+            return
+        
+    except Exception as e:
+        logging.warning(f"AcPowerSetPoint seadmine ebaõnnestus: {e}")
+    
+    # Teine meetod: MaxDischargePower
+    try:
+        iface = get_dbus_interface('com.victronenergy.settings', '/Settings/CGwacs/MaxDischargePower')
+        if iface:
+            iface.SetValue(dbus.Int32(int(limit_watts)))
+            logging.info(f"ESS MaxDischargePower seatud: {limit_watts} W")
+            return
+            
+            except Exception as e2:
+        logging.warning(f"MaxDischargePower seadmine ebaõnnestus: {e2}")
+    
+    # Kolmas meetod: otsene VEBus käsk (ettevaatlik!)
+    try:
+        # Leia VEBus seade
+        vebus_devices = [
+            'com.victronenergy.vebus.ttyS4',
+            'com.victronenergy.vebus.ttyO1', 
+            'com.victronenergy.vebus.ttyUSB0'
         ]
         
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-        logging.info(f"ESS AcPowerSetPoint seatud: {limit_watts} W")
-        logging.debug(f"DBus vastus: {result.stdout.strip()}")
+        for device in vebus_devices:
+            try:
+                # Proovi erinevaid VEBus teid
+                vebus_paths = [
+                    '/Hub4/L1/AcPowerSetpoint',
+                    '/Ac/PowerLimit',
+                    '/Hub4/DisableFeedIn'
+                ]
+                
+                for path in vebus_paths:
+                    try:
+                        iface = get_dbus_interface(device, path)
+                        if iface:
+                            if 'AcPowerSetpoint' in path:
+                                # Jaga faasideks
+                                per_phase = int(limit_watts / PHASE_COUNT)
+                                iface.SetValue(dbus.Double(float(per_phase)))
+                                logging.info(f"VEBus {device} {path} seatud: {per_phase} W")
+                                
+                                if PHASE_COUNT == 3:
+                                    # Sama ka teistele faasidele
+                                    for phase in ['L2', 'L3']:
+                                        phase_path = path.replace('L1', phase)
+                                        iface_phase = get_dbus_interface(device, phase_path)
+                                        if iface_phase:
+                                            iface_phase.SetValue(dbus.Double(float(per_phase)))
+                                            logging.info(f"VEBus {device} {phase_path} seatud: {per_phase} W")
+                                
+                            elif 'PowerLimit' in path:
+                                iface.SetValue(dbus.Int32(int(limit_watts)))
+                                logging.info(f"VEBus {device} PowerLimit seatud: {limit_watts} W")
+                            
+                            return
+                    except Exception:
+                        continue
+                        
+            except Exception:
+                continue
         
-    except subprocess.CalledProcessError as e:
-        logging.error(f"DBus käsk ebaõnnestus: {e}")
-        logging.error(f"Stderr: {e.stderr}")
+        logging.error("Kõik meetodid ebaõnnestusid - ei saanud võimsuspiirangut seada")
         
-        # Proovi alternatiivset meetodit - Hub4 režiimi seadeid
-        try:
-            logging.info("Proovin alternatiivset Hub4 meetodit...")
-            cmd_alt = [
-                "dbus-send", "--system", "--print-reply",
-                "--dest=com.victronenergy.settings", 
-                "/Settings/CGwacs/Hub4Mode",
-                "com.victronenergy.BusItem.SetValue",
-                "variant:int32:3"  # Hub4 režiim sisse
-            ]
-            subprocess.run(cmd_alt, check=True)
-            
-            # Seejärel sea võimsuspiirang
-            cmd_power = [
-                "dbus-send", "--system", "--print-reply",
-                "--dest=com.victronenergy.settings",
-                "/Settings/CGwacs/MaxDischargePower", 
-                "com.victronenergy.BusItem.SetValue",
-                f"variant:int32:{int(limit_watts)}"
-            ]
-            subprocess.run(cmd_power, check=True)
-            logging.info(f"Hub4 MaxDischargePower seatud: {limit_watts} W")
-            
-        except Exception as e2:
-            logging.error(f"Ka alternatiivne meetod ebaõnnestus: {e2}")
-    
-    except Exception as e:
-        logging.error(f"Üldine viga väljundvõimsuse seadmisel: {e}")
+    except Exception as e3:
+        logging.error(f"VEBus otsene käsk ebaõnnestus: {e3}")
 
 def check_ess_configuration():
-    """Kontrollib, et ESS on õigesti konfigureeritud"""
+    """Kontrollib, et ESS on õigesti konfigureeritud kasutades cache'itud DBus liidest"""
     try:
         # Kontrolli, et Hub4 režiim on sisse lülitatud
-        cmd = [
-            "dbus-send", "--system", "--print-reply",
-            "--dest=com.victronenergy.settings",
-            "/Settings/CGwacs/Hub4Mode",
-            "com.victronenergy.BusItem.GetValue"
-        ]
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-        
-        hub4_mode = None
-        for line in result.stdout.split('\n'):
-            if 'int32' in line:
-                hub4_mode = int(line.split()[-1])
-                break
+        iface = get_dbus_interface('com.victronenergy.settings', '/Settings/CGwacs/Hub4Mode')
+        if not iface:
+            logging.error("Ei saanud Hub4Mode liidest")
+            return False
+            
+        hub4_mode = int(iface.GetValue())
         
         if hub4_mode != 3:
             logging.warning(f"Hub4 režiim pole õigesti seadistatud (praegu: {hub4_mode}, peaks olema: 3)")
             # Proovi automaatselt sisse lülitada
-            cmd_set = [
-                "dbus-send", "--system", "--print-reply",
-                "--dest=com.victronenergy.settings",
-                "/Settings/CGwacs/Hub4Mode", 
-                "com.victronenergy.BusItem.SetValue",
-                "variant:int32:3"
-            ]
-            subprocess.run(cmd_set, check=True)
+            iface.SetValue(dbus.Int32(3))
             logging.info("Hub4 režiim sisse lülitatud")
+        else:
+            logging.info("Hub4 režiim on õigesti konfigureeritud")
         
         return True
         
