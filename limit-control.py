@@ -230,7 +230,32 @@ def set_multiplus_power_limit(limit_watts, vebus_device=None):
     
     logging.error("Kõik Multiplus piirangu meetodid ebaõnnestusid")
 
-
+def remove_multiplus_limits():
+    """Eemaldab kõik Multiplus piirangud - laseb vabalt töötada"""
+    global last_limit
+    
+    # Eemalda ESS piirangud
+    try:
+        # Eemalda AcPowerSetPoint piirang (sea väga suur väärtus)
+        iface = get_dbus_interface('com.victronenergy.settings', '/Settings/CGwacs/AcPowerSetPoint')
+        if iface:
+            iface.SetValue(dbus.Int32(100000))  # 100kW - praktiliselt piiranguta
+            logging.info("ESS AcPowerSetPoint piirang eemaldatud (seatud 100kW)")
+    except Exception as e:
+        logging.debug(f"AcPowerSetPoint piirangu eemaldamine ebaõnnestus: {e}")
+    
+    # Eemalda MaxDischargePower piirang
+    try:
+        iface = get_dbus_interface('com.victronenergy.settings', '/Settings/CGwacs/MaxDischargePower')
+        if iface:
+            iface.SetValue(dbus.Int32(100000))  # 100kW - praktiliselt piiranguta
+            logging.info("ESS MaxDischargePower piirang eemaldatud (seatud 100kW)")
+    except Exception as e:
+        logging.debug(f"MaxDischargePower piirangu eemaldamine ebaõnnestus: {e}")
+    
+    # Reset last_limit
+    last_limit = None
+    logging.info("Multiplus piirangud eemaldatud - vaba töö lubatud")
 
 def main():
     logging.info("Grid ekspordi piirangu skript käivitus.")
@@ -245,16 +270,16 @@ def main():
     
     # Positiivne väärtus = eksport võrku, negatiivne = import võrgust
     if grid_power <= 0:
-        logging.info(f"Import võrgust: {grid_power} W - piiranguid pole vaja, eemaldan võimalikud piirangud.")
-        # Eemalda piirangud, sea maksimum
-        set_multiplus_power_limit(MAX_GRID_EXPORT_W)
+        logging.info(f"Import võrgust: {grid_power} W - piiranguid pole vaja, eemaldan kõik piirangud.")
+        # Eemalda kõik piirangud - lase Multiplus'el vabalt töötada
+        remove_multiplus_limits()
         return
     
     # Kontrolli, kas grid eksport ületab lubatud piiri
     if grid_power <= MAX_GRID_EXPORT_W:
         logging.info(f"Grid eksport {grid_power} W on lubatud piiri {MAX_GRID_EXPORT_W} W sees - piiranguid pole vaja.")
         # Eemalda võimalikud varasemad piirangud
-        set_multiplus_power_limit(MAX_GRID_EXPORT_W)
+        remove_multiplus_limits()
         return
     
     # Grid eksport ületab piiri - vähenda Multiplus väljundit
@@ -272,10 +297,21 @@ def main():
     # Uus piirang: vähenda ülejäägi võrra + väike reserv
     new_limit = current_limit - excess_power - 500  # 500W reserv
     
-    # Kontrolli miinimumi
+    # Kontrolli miinimumi AINULT ekspordi piiramise korral
+    # Kui arvutatud piirang on liiga väike, siis kas:
+    # 1) Piirang on ikka vajalik (grid eksport ikka üle piiri)
+    # 2) Või lihtsalt eemalda piirangud täiesti
+    
     if new_limit < MIN_MULTIPLUS_OUTPUT_W:
+        # Kui isegi minimaalne piirang ei aita, siis probleem on PV inverteris
+        logging.warning(f"Arvutatud piirang {new_limit} W on alla miinimumi {MIN_MULTIPLUS_OUTPUT_W} W")
+        logging.warning(f"PV inverter toodab liiga palju ({grid_power - current_limit} W), rakendame minimaalse piirangu")
         new_limit = MIN_MULTIPLUS_OUTPUT_W
-        logging.warning(f"Arvutatud piirang {new_limit} W on alla miinimumi, kasutan miinimumi: {MIN_MULTIPLUS_OUTPUT_W} W")
+    
+    # Kontroll: kas piirang on mõistlik
+    if new_limit >= current_limit:
+        logging.info("Arvutatud piirang on suurem kui praegune - ei muuda midagi")
+        return
 
     logging.info(f"Vähenda Multiplus piirangut: {current_limit} W → {new_limit} W (excess: {excess_power} W)")
     set_multiplus_power_limit(new_limit)
