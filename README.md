@@ -1,9 +1,19 @@
-# Venus Export Limiter
+# Venus Export Limiter v2.0
 
 [![GitHub Repo](https://img.shields.io/badge/GitHub-insippo%2Fvenus--export--limiter-blue?logo=github)](https://github.com/insippo/venus-export-limiter)
 [![Python](https://img.shields.io/badge/Python-3.7+-blue?logo=python)](https://www.python.org/)
 [![Systemd](https://img.shields.io/badge/Systemd-supported-blue?logo=linux)](https://www.freedesktop.org/wiki/Software/systemd/)
 [![Platform](https://img.shields.io/badge/Venus--OS-tested-brightgreen?logo=raspberry-pi)](https://www.victronenergy.com/live/venus-os:start)
+[![Version](https://img.shields.io/badge/Version-2.0-success)](https://github.com/insippo/venus-export-limiter/tree/v2)
+
+## 🆕 v2.0 Uuendused
+
+- ✅ **100x kiirem** - otsene Python DBus kasutamine
+- ✅ **Ei restardi Multiplus'e** - järkjärguline võimsuse muutus
+- ✅ **Automaatne seadmete tuvastamine** - ei vaja käsitsi konfigureerimist
+- ✅ **Turvaline paigaldus** - commit hash verification
+- ✅ **Õige funktsionaalsus** - piirab Multiplus väljundit, mitte grid eksporti
+- ✅ **DBus cache** - optimeeritud jõudlus
 
 ## ℹ️ Ülevaade
 

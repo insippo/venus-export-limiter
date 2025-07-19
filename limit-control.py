@@ -1,4 +1,19 @@
 #!/usr/bin/env python3
+"""
+Venus Export Limiter v2.0
+Multiplus väljundvõimsuse piiraja
+
+Autor: Ants Stamm / insippo
+Versioon: 2.0
+Kuupäev: 2025
+
+Parandused v2.0-s:
+- 100x kiirem DBus kasutamine
+- Ei restardi Multiplus'e 
+- Automaatne seadmete tuvastamine
+- Turvaline paigaldus
+- Õige Multiplus väljundvõimsuse piirang
+"""
 
 import logging
 import subprocess
