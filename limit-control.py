@@ -4,7 +4,7 @@ import logging
 import subprocess
 import os
 import sys
-from config import MAX_EXPORT_LIMIT_W, PHASE_COUNT, MIN_OUTPUT_LIMIT_W
+from config import MAX_EXPORT_LIMIT_W, PHASE_COUNT, MIN_OUTPUT_LIMIT_W, MAX_POWER_CHANGE_PER_STEP, GRADUAL_ADJUSTMENT
 from dbus.mainloop.glib import DBusGMainLoop
 import dbus
 
@@ -38,6 +38,29 @@ def validate_config():
 
 validate_config()
 
+# Globaalne muutuja viimase piirangu jälgimiseks
+last_limit = None
+
+def get_current_ess_limit():
+    """Loeb praeguse ESS piirangu"""
+    try:
+        cmd = [
+            "dbus-send", "--system", "--print-reply",
+            "--dest=com.victronenergy.settings",
+            "/Settings/CGwacs/AcPowerSetPoint",
+            "com.victronenergy.BusItem.GetValue"
+        ]
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        # Parse DBus vastust
+        for line in result.stdout.split('\n'):
+            if 'int32' in line:
+                value = int(line.split()[-1])
+                return value
+        return None
+    except Exception as e:
+        logging.debug(f"Ei saanud praegust ESS piirangut lugeda: {e}")
+        return None
+
 def get_export_power():
     bus = dbus.SystemBus()
     
@@ -64,24 +87,120 @@ def get_export_power():
     logging.error("Ei leidnud ühtegi töötavat grid seadet")
     return None
 
-def set_vebus_output_limit(limit_per_phase):
-    total_limit = limit_per_phase * PHASE_COUNT
+def set_vebus_output_limit(limit_watts):
+    """
+    Seab Multiplus väljundpiirangu kasutades ESS seadeid.
+    Negatiivne väärtus = laadimispiirang, positiivne = tühjendusp piirang
+    """
+    global last_limit
+    
+    # Järkjärguline muutus, et vältida äkilisi hüppeid (kui lubatud)
+    if GRADUAL_ADJUSTMENT:
+        current_limit = get_current_ess_limit()
+        if current_limit is not None and last_limit is not None:
+            if abs(limit_watts - current_limit) > MAX_POWER_CHANGE_PER_STEP:
+                if limit_watts > current_limit:
+                    limit_watts = current_limit + MAX_POWER_CHANGE_PER_STEP
+                else:
+                    limit_watts = current_limit - MAX_POWER_CHANGE_PER_STEP
+                logging.info(f"Järkjärguline muutus: {current_limit} -> {limit_watts} W (samm: {MAX_POWER_CHANGE_PER_STEP}W)")
+    
+    # Salvesta viimane piirang
+    last_limit = limit_watts
+    
     try:
+        # Kasuta ESS seadeid, mitte otse VEBus käske
+        # AcPowerSetPoint määrab maksimaalse AC väljundvõimsuse
         cmd = [
-            "dbus-send", "--system",
-            "--dest=com.victronenergy.vebus.ttyS4",
-            "/Hub4",
+            "dbus-send", "--system", "--print-reply",
+            "--dest=com.victronenergy.settings",
+            "/Settings/CGwacs/AcPowerSetPoint",
             "com.victronenergy.BusItem.SetValue",
-            "string:/AcPowerSetpoint",
-            f"double:{total_limit:.1f}"
+            f"variant:int32:{int(limit_watts)}"
         ]
-        subprocess.run(cmd, check=True)
-        logging.info(f"Seatud väljund: {total_limit} W (ehk {limit_per_phase} W/faas)")
+        
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        logging.info(f"ESS AcPowerSetPoint seatud: {limit_watts} W")
+        logging.debug(f"DBus vastus: {result.stdout.strip()}")
+        
+    except subprocess.CalledProcessError as e:
+        logging.error(f"DBus käsk ebaõnnestus: {e}")
+        logging.error(f"Stderr: {e.stderr}")
+        
+        # Proovi alternatiivset meetodit - Hub4 režiimi seadeid
+        try:
+            logging.info("Proovin alternatiivset Hub4 meetodit...")
+            cmd_alt = [
+                "dbus-send", "--system", "--print-reply",
+                "--dest=com.victronenergy.settings", 
+                "/Settings/CGwacs/Hub4Mode",
+                "com.victronenergy.BusItem.SetValue",
+                "variant:int32:3"  # Hub4 režiim sisse
+            ]
+            subprocess.run(cmd_alt, check=True)
+            
+            # Seejärel sea võimsuspiirang
+            cmd_power = [
+                "dbus-send", "--system", "--print-reply",
+                "--dest=com.victronenergy.settings",
+                "/Settings/CGwacs/MaxDischargePower", 
+                "com.victronenergy.BusItem.SetValue",
+                f"variant:int32:{int(limit_watts)}"
+            ]
+            subprocess.run(cmd_power, check=True)
+            logging.info(f"Hub4 MaxDischargePower seatud: {limit_watts} W")
+            
+        except Exception as e2:
+            logging.error(f"Ka alternatiivne meetod ebaõnnestus: {e2}")
+    
     except Exception as e:
-        logging.error(f"Viga väljundvõimsuse seadmisel: {e}")
+        logging.error(f"Üldine viga väljundvõimsuse seadmisel: {e}")
+
+def check_ess_configuration():
+    """Kontrollib, et ESS on õigesti konfigureeritud"""
+    try:
+        # Kontrolli, et Hub4 režiim on sisse lülitatud
+        cmd = [
+            "dbus-send", "--system", "--print-reply",
+            "--dest=com.victronenergy.settings",
+            "/Settings/CGwacs/Hub4Mode",
+            "com.victronenergy.BusItem.GetValue"
+        ]
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        
+        hub4_mode = None
+        for line in result.stdout.split('\n'):
+            if 'int32' in line:
+                hub4_mode = int(line.split()[-1])
+                break
+        
+        if hub4_mode != 3:
+            logging.warning(f"Hub4 režiim pole õigesti seadistatud (praegu: {hub4_mode}, peaks olema: 3)")
+            # Proovi automaatselt sisse lülitada
+            cmd_set = [
+                "dbus-send", "--system", "--print-reply",
+                "--dest=com.victronenergy.settings",
+                "/Settings/CGwacs/Hub4Mode", 
+                "com.victronenergy.BusItem.SetValue",
+                "variant:int32:3"
+            ]
+            subprocess.run(cmd_set, check=True)
+            logging.info("Hub4 režiim sisse lülitatud")
+        
+        return True
+        
+    except Exception as e:
+        logging.error(f"ESS konfiguratsiooni kontroll ebaõnnestus: {e}")
+        return False
 
 def main():
     logging.info("Skript käivitus.")
+    
+    # Kontrolli ESS konfiguratsiooni
+    if not check_ess_configuration():
+        logging.error("ESS pole õigesti konfigureeritud, katkestan.")
+        return
+    
     exported_power = get_export_power()
     if exported_power is None:
         logging.warning("Eksportvõimsus puudub, katkestan.")
@@ -92,8 +211,7 @@ def main():
     if exported_power <= 0:
         logging.info(f"Importimine võrgust: {exported_power} W, piiranguid ei rakenda.")
         # Set maximum allowed output when importing
-        limit_per_phase = int(MAX_EXPORT_LIMIT_W / PHASE_COUNT)
-        set_vebus_output_limit(limit_per_phase)
+        set_vebus_output_limit(MAX_EXPORT_LIMIT_W)
         return
     
     export = exported_power
@@ -103,9 +221,8 @@ def main():
         allowed_output = MIN_OUTPUT_LIMIT_W
         logging.warning(f"Eksport {export} W ületab piiri, seatan miinimumi: {allowed_output} W")
 
-    limit_per_phase = int(allowed_output / PHASE_COUNT)
     logging.info(f"Eksport: {export} W, lubatud väljund: {allowed_output} W")
-    set_vebus_output_limit(limit_per_phase)
+    set_vebus_output_limit(allowed_output)
 
 if __name__ == "__main__":
     main()
