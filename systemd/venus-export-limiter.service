@@ -1,12 +1,11 @@
 [Unit]
-Description=Venus Export Limiter
-After=network.target
+Description=Venus OS Export Limiter v2 (Minimal, no logging)
+After=dbus.service
+Requires=dbus.service
 
 [Service]
-ExecStart=/usr/bin/python3 /data/dbus-limit/limit-control.py
-WorkingDirectory=/data/dbus-limit
-StandardOutput=append:/data/dbus-limit/limit.log
-StandardError=append:/data/dbus-limit/limit.log
+Type=simple
+ExecStart=/usr/bin/python3 /data/venus-export-limiter-v2/limit-control-v2.py
 Restart=always
 
 [Install]

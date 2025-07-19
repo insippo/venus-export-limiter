@@ -1,62 +1,76 @@
-# Venus Export Limiter
+# Venus Export Limiter v2.0 (Minimal)
 
-[![GitHub Repo](https://img.shields.io/badge/GitHub-insippo%2Fvenus--export--limiter-blue?logo=github)](https://github.com/insippo/venus-export-limiter)
-[![Python](https://img.shields.io/badge/Python-3.7+-blue?logo=python)](https://www.python.org/)
-[![Systemd](https://img.shields.io/badge/Systemd-supported-blue?logo=linux)](https://www.freedesktop.org/wiki/Software/systemd/)
-[![Platform](https://img.shields.io/badge/Venus--OS-tested-brightgreen?logo=raspberry-pi)](https://www.victronenergy.com/live/venus-os:start)
+## Purpose
 
-## ℹ️ Ülevaade
+Limit grid export on Victron Venus OS systems by dynamically adjusting `AcPowerSetPoint`, using only D-Bus calls. No logging, no file writes.
 
-See projekt piirab Victron Venus OS-is võrku eksporditavat võimsust, arvestades PV toodangut ja Multiplus väljundit.  
-Kui võrku suunduv võimsus ületab `MAX_EXPORT_LIMIT_W`, siis skript vähendab Multiplus väljundit, et püsida lubatud piiris.
+## Features
 
-## ⚠️ HOIATUS
+- Reads inverter and MultiPlus export power
+- Calculates total export and limits to max (default 15 kW)
+- Sets D-Bus path `/Settings/CGwacs/AcPowerSetPoint` accordingly
+- Extremely lightweight and memory-safe
 
-**Kui kasutad seda valesti või vales seadmes, võib see rikkuda Venus OS-i töö. Ära paigalda seda süsteemi, millest sa aru ei saa.**  
-Skripti võib täiesti valesti seadistatuna kasutada nagu "lunarahaviirust", mis katkestab energiavoogu või piirab Multiplus väljundit nulli.
+## Paths used
 
-**KASUTA OMAL VASTUTUSEL.**
+- PV: `/Ac/Power` on `com.victronenergy.pvinverter.pvinverter0`
+- MultiPlus: `/Ac/Out/P` on `com.victronenergy.vebus.ttyO1`
+- Export limit: `/Settings/CGwacs/AcPowerSetPoint`
 
-## 🚀 Kiire automaatne paigaldus
+## Systemd install
 
-```bash
-wget https://raw.githubusercontent.com/insippo/venus-export-limiter/master/install.sh
-bash install.sh
-```
-
-See kloonib repo `/data/dbus-limit` alla, seab õigused, paigaldab systemd teenuse ja käivitab selle.
-
-## ⚙️ Käsitsi seadistamine
-
-Muuda `config.py` vastavalt oma süsteemile:
-
-```python
-MAX_EXPORT_LIMIT_W = 15000
-PHASE_COUNT = 3
-MIN_OUTPUT_LIMIT_W = 1000
-```
-
-Kontrolli ka, et `com.victronenergy.grid.X` ja `vebus.ttyS4` vastavad sinu seadmetele.
-
-## 🔁 Systemd teenus
+1. Clone repo to `/data/venus-export-limiter-v2`
+2. Copy `.service` file to `/etc/systemd/system/`
+3. Enable & start:
 
 ```bash
-cp systemd/venus-export-limiter.service /etc/systemd/system/
 systemctl daemon-reexec
-systemctl enable --now venus-export-limiter.service
+systemctl enable venus-limiter-v2
+systemctl start venus-limiter-v2
 ```
 
-## 📄 Logid
+## License
 
-```bash
-tail -f /data/dbus-limit/limit.log
-```
+MIT
+# Venus Export Limiter v2.0 – Minimal
 
-## ✅ Testitud platvormid
+See versioon piirab võrku eksporditavat võimsust otse D-Bus kaudu, ilma logimiseta ja ilma mälukasutust suurendamata. Sobib Cerbo GX seadmetele, kus süsteem peab töötama kergelt ja katkestusteta.
 
-- Victron Cerbo GX (Venus OS v3.10)
-- Custom Venus OS builds (Raspberry Pi)
+## Omadused
 
-## 👤 Autor
+- Otsepöördus D-Bus'ile (ei kasuta DBusMonitori ega logifaile)
+- Piirab eksporti näiteks 15 000 W peale (muudetav)
+- Arvestab korraga PV inverterit ja MultiPlus väljundit
+- Jookseb loopina iga 2 sekundi järel
+- Ei jäta jälgi ega logisid
 
-Ants Stamm / insippo · 2025 · Estonia 🇪🇪
+## Kasutatavad D-Bus aadressid
+
+- PV: `com.victronenergy.pvinverter.pvinverter0 /Ac/Power`
+- MultiPlus: `com.victronenergy.vebus.ttyO1 /Ac/Out/P`
+- Piirangu seadmine: `com.victronenergy.settings /Settings/CGwacs/AcPowerSetPoint`
+
+## Paigaldamine
+
+1. Kopeeri skript ja teenusefail Cerbo GX seadmesse:
+   ```bash
+   mkdir -p /data/venus-export-limiter-v2
+   cp limit-control-v2.py /data/venus-export-limiter-v2/
+   cp venus-limiter-v2.service /etc/systemd/system/
+
+systemctl daemon-reexec
+systemctl enable venus-limiter-v2
+systemctl start venus-limiter-v2
+
+systemctl status venus-limiter-v2
+
+
+Muudatused võrreldes v1-ga
+Eemaldatud logimine ja kõik tarbetud funktsioonid
+
+Oluliselt kiirem ja stabiilsem
+
+Mõeldud jooksma ilma katkestusteta Cerbo GX sisemälus
+
+Litsents
+MIT
