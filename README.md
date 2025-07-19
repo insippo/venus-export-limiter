@@ -40,15 +40,66 @@ See kloonib repo `/data/dbus-limit` alla, seab õigused, paigaldab systemd teenu
 
 ## ⚙️ Käsitsi seadistamine
 
-Muuda `config.py` vastavalt oma süsteemile:
+### Võimsuspiirangu muutmine
+
+**OLULINE:** Muuda `config.py` failis `MAX_MULTIPLUS_OUTPUT_W` väärtust vastavalt oma vajadusele!
 
 ```python
-MAX_MULTIPLUS_OUTPUT_W = 30000      # Maksimaalne Multiplus väljundvõimsus (W)
-PHASE_COUNT = 3
-MIN_OUTPUT_LIMIT_W = 1000
+# Näited erinevate piirangute jaoks:
+
+# 15kW piirang
+MAX_MULTIPLUS_OUTPUT_W = 15000      # 15 kilovatti
+
+# 20kW piirang  
+MAX_MULTIPLUS_OUTPUT_W = 20000      # 20 kilovatti
+
+# 30kW piirang (vaikimisi)
+MAX_MULTIPLUS_OUTPUT_W = 30000      # 30 kilovatti
+
+# Muud seaded
+PHASE_COUNT = 3                     # 3-faasiline (või 1 ühe faasi puhul)
+MIN_OUTPUT_LIMIT_W = 1000          # Minimaalne väljundvõimsus
+```
+
+### Täielik config.py näide:
+
+```python
+# === PEAMISED SEADED ===
+MAX_MULTIPLUS_OUTPUT_W = 20000      # MUUDA SEDA! Sinu soovitud piirang (W)
+PHASE_COUNT = 3                     # 1 või 3 (sinu süsteemi järgi)
+MIN_OUTPUT_LIMIT_W = 1000          # Minimaalne väljund (W)
+
+# === TÄPSEMAD SEADED ===
+# Järkjärgulise muutuse seaded (vältimaks Multiplus restarti)
+MAX_POWER_CHANGE_PER_STEP = 1000   # Maksimaalne võimsuse muutus sammu kohta (W)
+GRADUAL_ADJUSTMENT = True          # Kas kasutada järkjärgulist muutust
+```
+
+**Paigaldamise järel muuda kindlasti:**
+```bash
+nano /data/dbus-limit/config.py
+# Muuda MAX_MULTIPLUS_OUTPUT_W oma vajaduse järgi
+# Salvesta: Ctrl+X, Y, Enter
+
+# Taaskäivita teenus
+systemctl restart venus-export-limiter
 ```
 
 Skript leiab Multiplus seadmed automaatselt.
+
+### 💡 Levinud Kasutusjuhud
+
+| Vajadus | Seadistus | Selgitus |
+|---------|-----------|----------|
+| **Kodumajapidamine** | `15000` | 15kW - tüüpiline koduse võrguühenduse piirang |
+| **Väike ettevõte** | `20000` | 20kW - keskmise suurusega tööstuslik ühendus |
+| **Suur maja/farm** | `30000` | 30kW - suur tööstuslik või põllumajanduslik objekt |
+| **Korterelamu** | `25000` | 25kW - suurema korterelamu võrguühendus |
+
+**Kuidas valida õige piirang:**
+1. Vaata oma elektriühenduse lepingut (maksimaalne võimsus)
+2. Võta 10-20% vähem, et olla kindel
+3. Näiteks: 18kW leping → kasuta `16000` või `17000`
 
 ## 🔁 Systemd teenus
 
@@ -126,15 +177,24 @@ Skript proovib automaatselt neid VEBus seadme teid:
 
 ## 📊 Konfiguratsiooni Valikud
 
+⚠️ **ENNE KASUTAMIST MUUDA KINDLASTI `MAX_MULTIPLUS_OUTPUT_W` VÄÄRTUST!**
+
 ```python
 # config.py
-MAX_MULTIPLUS_OUTPUT_W = 30000      # Sinu võimsuspiirang (W)
+MAX_MULTIPLUS_OUTPUT_W = 30000      # ← MUUDA SEDA! Sinu võimsuspiirang (W)
 PHASE_COUNT = 3                     # 1 või 3 faasiline süsteem
 MIN_OUTPUT_LIMIT_W = 1000          # Minimaalne väljund (W)
 
 # Järkjärgulise muutuse seaded (vältimaks Multiplus restarti)
 MAX_POWER_CHANGE_PER_STEP = 1000   # Maksimaalne võimsuse muutus sammu kohta (W)
 GRADUAL_ADJUSTMENT = True          # Luba järkjärguline muutus
+```
+
+**Kiire muutmise käsk:**
+```bash
+# Pärast paigaldamist
+sed -i 's/MAX_MULTIPLUS_OUTPUT_W = 30000/MAX_MULTIPLUS_OUTPUT_W = 15000/' /data/dbus-limit/config.py
+systemctl restart venus-export-limiter
 ```
 
 ## 🚨 Probleemide Lahendamine

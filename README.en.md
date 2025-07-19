@@ -40,15 +40,66 @@ This clones the repo to `/data/dbus-limit`, sets permissions, installs the syste
 
 ## ⚙️ Manual Configuration
 
-Edit `config.py` according to your system:
+### Changing Power Limit
+
+**IMPORTANT:** Edit `MAX_MULTIPLUS_OUTPUT_W` value in `config.py` according to your needs!
 
 ```python
-MAX_MULTIPLUS_OUTPUT_W = 30000      # Maximum Multiplus output power (W)
-PHASE_COUNT = 3
-MIN_OUTPUT_LIMIT_W = 1000
+# Examples for different power limits:
+
+# 15kW limit
+MAX_MULTIPLUS_OUTPUT_W = 15000      # 15 kilowatts
+
+# 20kW limit
+MAX_MULTIPLUS_OUTPUT_W = 20000      # 20 kilowatts
+
+# 30kW limit (default)
+MAX_MULTIPLUS_OUTPUT_W = 30000      # 30 kilowatts
+
+# Other settings
+PHASE_COUNT = 3                     # 3-phase (or 1 for single phase)
+MIN_OUTPUT_LIMIT_W = 1000          # Minimum output power
+```
+
+### Complete config.py example:
+
+```python
+# === MAIN SETTINGS ===
+MAX_MULTIPLUS_OUTPUT_W = 20000      # CHANGE THIS! Your desired limit (W)
+PHASE_COUNT = 3                     # 1 or 3 (according to your system)
+MIN_OUTPUT_LIMIT_W = 1000          # Minimum output (W)
+
+# === ADVANCED SETTINGS ===
+# Gradual adjustment settings (prevents Multiplus restart)
+MAX_POWER_CHANGE_PER_STEP = 1000   # Max power change per step (W)
+GRADUAL_ADJUSTMENT = True          # Enable gradual changes
+```
+
+**After installation, make sure to change:**
+```bash
+nano /data/dbus-limit/config.py
+# Change MAX_MULTIPLUS_OUTPUT_W to your needs
+# Save: Ctrl+X, Y, Enter
+
+# Restart service
+systemctl restart venus-export-limiter
 ```
 
 The script automatically detects Multiplus devices.
+
+### 💡 Common Use Cases
+
+| Need | Setting | Explanation |
+|------|---------|-------------|
+| **Home** | `15000` | 15kW - typical residential grid connection limit |
+| **Small business** | `20000` | 20kW - medium-sized industrial connection |
+| **Large facility** | `30000` | 30kW - large industrial or agricultural facility |
+| **Apartment building** | `25000` | 25kW - larger apartment complex grid connection |
+
+**How to choose the right limit:**
+1. Check your electricity contract (maximum power)
+2. Take 10-20% less to be safe
+3. Example: 18kW contract → use `16000` or `17000`
 
 ## 🔁 Systemd Service
 
@@ -133,15 +184,24 @@ The script automatically tries these VEBus device paths:
 
 ## 📊 Configuration Options
 
+⚠️ **BEFORE USE, MAKE SURE TO CHANGE `MAX_MULTIPLUS_OUTPUT_W` VALUE!**
+
 ```python
 # config.py
-MAX_MULTIPLUS_OUTPUT_W = 30000      # Your power limit (W)
+MAX_MULTIPLUS_OUTPUT_W = 30000      # ← CHANGE THIS! Your power limit (W)
 PHASE_COUNT = 3                     # 1 or 3 phase system
 MIN_OUTPUT_LIMIT_W = 1000          # Minimum output (W)
 
 # Gradual adjustment settings (prevents Multiplus restart)
 MAX_POWER_CHANGE_PER_STEP = 1000   # Max power change per step (W)
 GRADUAL_ADJUSTMENT = True          # Enable gradual changes
+```
+
+**Quick change command:**
+```bash
+# After installation
+sed -i 's/MAX_MULTIPLUS_OUTPUT_W = 30000/MAX_MULTIPLUS_OUTPUT_W = 15000/' /data/dbus-limit/config.py
+systemctl restart venus-export-limiter
 ```
 
 ## 🚨 Troubleshooting
