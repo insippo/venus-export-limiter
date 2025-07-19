@@ -3,6 +3,7 @@
 set -e
 
 REPO_URL="https://github.com/insippo/venus-export-limiter.git"
+BRANCH="v2"  # Use v2 branch for latest improvements
 INSTALL_DIR="/data/dbus-limit"
 SERVICE_NAME="venus-export-limiter.service"
 # Expected commit hash for security verification (should be updated for each release)
@@ -48,8 +49,8 @@ if [ -d "$INSTALL_DIR/.git" ]; then
     
     git pull
 else
-    echo "📥 Kloonime uue repo..."
-    git clone "$REPO_URL" "$INSTALL_DIR"
+    echo "📥 Kloonime uue repo (branch: $BRANCH)..."
+    git clone -b "$BRANCH" "$REPO_URL" "$INSTALL_DIR"
     cd "$INSTALL_DIR"
     
     # Verify the cloned commit if hash is provided
