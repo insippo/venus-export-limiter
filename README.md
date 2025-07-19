@@ -7,8 +7,8 @@
 
 ## ℹ️ Ülevaade
 
-See projekt piirab Victron Venus OS-is võrku eksporditavat võimsust, arvestades PV toodangut ja Multiplus väljundit.  
-Kui võrku suunduv võimsus ületab `MAX_EXPORT_LIMIT_W`, siis skript vähendab Multiplus väljundit, et püsida lubatud piiris.
+See projekt piirab Victron Venus OS-is Multiplus'te väljundvõimsust, et see ei ületaks määratud piiri.  
+Kui Multiplus'te väljundvõimsus ületab `MAX_MULTIPLUS_OUTPUT_W` (30kW), siis skript rakendab võimsuspiirangu.
 
 ## ⚠️ HOIATUS
 
@@ -31,12 +31,12 @@ See kloonib repo `/data/dbus-limit` alla, seab õigused, paigaldab systemd teenu
 Muuda `config.py` vastavalt oma süsteemile:
 
 ```python
-MAX_EXPORT_LIMIT_W = 15000
+MAX_MULTIPLUS_OUTPUT_W = 30000      # Maksimaalne Multiplus väljundvõimsus (W)
 PHASE_COUNT = 3
 MIN_OUTPUT_LIMIT_W = 1000
 ```
 
-Kontrolli ka, et `com.victronenergy.grid.X` ja `vebus.ttyS4` vastavad sinu seadmetele.
+Skript leiab Multiplus seadmed automaatselt.
 
 ## 🔁 Systemd teenus
 

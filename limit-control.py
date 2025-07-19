@@ -4,7 +4,7 @@ import logging
 import subprocess
 import os
 import sys
-from config import MAX_EXPORT_LIMIT_W, PHASE_COUNT, MIN_OUTPUT_LIMIT_W, MAX_POWER_CHANGE_PER_STEP, GRADUAL_ADJUSTMENT
+from config import MAX_MULTIPLUS_OUTPUT_W, PHASE_COUNT, MIN_OUTPUT_LIMIT_W, MAX_POWER_CHANGE_PER_STEP, GRADUAL_ADJUSTMENT
 from dbus.mainloop.glib import DBusGMainLoop
 import dbus
 
@@ -17,8 +17,8 @@ logging.basicConfig(filename=log_path, level=logging.INFO, format="%(asctime)s -
 def validate_config():
     errors = []
     
-    if not isinstance(MAX_EXPORT_LIMIT_W, (int, float)) or MAX_EXPORT_LIMIT_W <= 0:
-        errors.append(f"MAX_EXPORT_LIMIT_W must be a positive number, got: {MAX_EXPORT_LIMIT_W}")
+    if not isinstance(MAX_MULTIPLUS_OUTPUT_W, (int, float)) or MAX_MULTIPLUS_OUTPUT_W <= 0:
+        errors.append(f"MAX_MULTIPLUS_OUTPUT_W must be a positive number, got: {MAX_MULTIPLUS_OUTPUT_W}")
     
     if not isinstance(PHASE_COUNT, int) or PHASE_COUNT not in [1, 3]:
         errors.append(f"PHASE_COUNT must be 1 or 3, got: {PHASE_COUNT}")
@@ -26,15 +26,15 @@ def validate_config():
     if not isinstance(MIN_OUTPUT_LIMIT_W, (int, float)) or MIN_OUTPUT_LIMIT_W < 0:
         errors.append(f"MIN_OUTPUT_LIMIT_W must be non-negative, got: {MIN_OUTPUT_LIMIT_W}")
     
-    if MIN_OUTPUT_LIMIT_W >= MAX_EXPORT_LIMIT_W:
-        errors.append(f"MIN_OUTPUT_LIMIT_W ({MIN_OUTPUT_LIMIT_W}) must be less than MAX_EXPORT_LIMIT_W ({MAX_EXPORT_LIMIT_W})")
+    if MIN_OUTPUT_LIMIT_W >= MAX_MULTIPLUS_OUTPUT_W:
+        errors.append(f"MIN_OUTPUT_LIMIT_W ({MIN_OUTPUT_LIMIT_W}) must be less than MAX_MULTIPLUS_OUTPUT_W ({MAX_MULTIPLUS_OUTPUT_W})")
     
     if errors:
         for error in errors:
             logging.error(f"Configuration error: {error}")
         sys.exit(1)
     
-    logging.info(f"Configuration validated: MAX_EXPORT={MAX_EXPORT_LIMIT_W}W, PHASES={PHASE_COUNT}, MIN_OUTPUT={MIN_OUTPUT_LIMIT_W}W")
+    logging.info(f"Configuration validated: MAX_MULTIPLUS_OUTPUT={MAX_MULTIPLUS_OUTPUT_W}W, PHASES={PHASE_COUNT}, MIN_OUTPUT={MIN_OUTPUT_LIMIT_W}W")
 
 validate_config()
 
@@ -79,183 +79,199 @@ def get_current_ess_limit():
         logging.debug(f"Ei saanud praegust ESS piirangut lugeda: {e}")
         return None
 
-def get_export_power():
-    # Try common grid meter device paths
-    grid_devices = [
-        'com.victronenergy.grid.cgwacs_ttyUSB0_di30_mb1',
-        'com.victronenergy.grid.ttyUSB0',
-        'com.victronenergy.grid.ttyUSB1', 
-        'com.victronenergy.grid.ttyS4',
-        'com.victronenergy.grid.cgwacs_ttyS4_di30_mb1'
+def get_multiplus_output_power():
+    """Loeb Multiplus'te praegust väljundvõimsust"""
+    # Try common VEBus device paths
+    vebus_devices = [
+        'com.victronenergy.vebus.ttyS4',
+        'com.victronenergy.vebus.ttyO1', 
+        'com.victronenergy.vebus.ttyUSB0',
+        'com.victronenergy.vebus.can0'
     ]
     
-    for device in grid_devices:
+    for device in vebus_devices:
         try:
-            iface = get_dbus_interface(device, '/Ac/Power')
+            # Proovi lugeda AC väljundvõimsust
+            iface = get_dbus_interface(device, '/Ac/Out/P')
             if iface:
                 result = iface.GetValue()
-                exported_power = float(result)
-                logging.info(f"Loetud eksportvõimsus: {exported_power} W (seade: {device})")
-                return exported_power
+                output_power = float(result)
+                logging.info(f"Loetud Multiplus väljundvõimsus: {output_power} W (seade: {device})")
+                return output_power, device
         except Exception:
             continue
     
-    logging.error("Ei leidnud ühtegi töötavat grid seadet")
-    return None
+    # Kui ei leia /Ac/Out/P, proovi alternatiivset teed
+    for device in vebus_devices:
+        try:
+            # Proovi faasidepõhist lugemist
+            total_power = 0
+            phases_found = 0
+            
+            for phase in ['L1', 'L2', 'L3']:
+                try:
+                    iface = get_dbus_interface(device, f'/Ac/Out/{phase}/P')
+                    if iface:
+                        phase_power = float(iface.GetValue())
+                        total_power += phase_power
+                        phases_found += 1
+                        logging.debug(f"Faas {phase}: {phase_power} W")
+                except Exception:
+                    continue
+            
+            if phases_found > 0:
+                logging.info(f"Loetud Multiplus väljundvõimsus: {total_power} W ({phases_found} faasi, seade: {device})")
+                return total_power, device
+                
+        except Exception:
+            continue
+    
+    logging.error("Ei leidnud ühtegi töötavat Multiplus seadet")
+    return None, None
 
-def set_vebus_output_limit(limit_watts):
+def set_multiplus_power_limit(limit_watts, vebus_device=None):
     """
-    Seab Multiplus väljundpiirangu kasutades ESS seadeid.
+    Seab Multiplus'te väljundvõimsuse piirangu.
     Kasutab otse Python DBus teeki kiiruse huvides.
     """
     global last_limit
     
     # Järkjärguline muutus, et vältida äkilisi hüppeid (kui lubatud)
-    if GRADUAL_ADJUSTMENT:
-        current_limit = get_current_ess_limit()
-        if current_limit is not None and last_limit is not None:
-            if abs(limit_watts - current_limit) > MAX_POWER_CHANGE_PER_STEP:
-                if limit_watts > current_limit:
-                    limit_watts = current_limit + MAX_POWER_CHANGE_PER_STEP
-                else:
-                    limit_watts = current_limit - MAX_POWER_CHANGE_PER_STEP
-                logging.info(f"Järkjärguline muutus: {current_limit} -> {limit_watts} W (samm: {MAX_POWER_CHANGE_PER_STEP}W)")
+    if GRADUAL_ADJUSTMENT and last_limit is not None:
+        if abs(limit_watts - last_limit) > MAX_POWER_CHANGE_PER_STEP:
+            if limit_watts > last_limit:
+                limit_watts = last_limit + MAX_POWER_CHANGE_PER_STEP
+            else:
+                limit_watts = last_limit - MAX_POWER_CHANGE_PER_STEP
+            logging.info(f"Järkjärguline muutus: {last_limit} -> {limit_watts} W (samm: {MAX_POWER_CHANGE_PER_STEP}W)")
     
     # Salvesta viimane piirang
     last_limit = limit_watts
     
-    bus = get_system_bus()
-    
-    try:
-        # Esimene meetod: AcPowerSetPoint (põhiline ESS seade)
-        iface = get_dbus_interface('com.victronenergy.settings', '/Settings/CGwacs/AcPowerSetPoint')
-        if iface:
-            iface.SetValue(dbus.Int32(int(limit_watts)))
-            logging.info(f"ESS AcPowerSetPoint seatud: {limit_watts} W")
-            return
-        
-    except Exception as e:
-        logging.warning(f"AcPowerSetPoint seadmine ebaõnnestus: {e}")
-    
-    # Teine meetod: MaxDischargePower
-    try:
-        iface = get_dbus_interface('com.victronenergy.settings', '/Settings/CGwacs/MaxDischargePower')
-        if iface:
-            iface.SetValue(dbus.Int32(int(limit_watts)))
-            logging.info(f"ESS MaxDischargePower seatud: {limit_watts} W")
-            return
-            
-            except Exception as e2:
-        logging.warning(f"MaxDischargePower seadmine ebaõnnestus: {e2}")
-    
-    # Kolmas meetod: otsene VEBus käsk (ettevaatlik!)
-    try:
-        # Leia VEBus seade
+    # Kui ei ole antud konkreetset seadet, proovi leida
+    if not vebus_device:
         vebus_devices = [
             'com.victronenergy.vebus.ttyS4',
             'com.victronenergy.vebus.ttyO1', 
-            'com.victronenergy.vebus.ttyUSB0'
+            'com.victronenergy.vebus.ttyUSB0',
+            'com.victronenergy.vebus.can0'
         ]
-        
+    else:
+        vebus_devices = [vebus_device]
+    
         for device in vebus_devices:
-            try:
-                # Proovi erinevaid VEBus teid
-                vebus_paths = [
-                    '/Hub4/L1/AcPowerSetpoint',
-                    '/Ac/PowerLimit',
-                    '/Hub4/DisableFeedIn'
-                ]
-                
-                for path in vebus_paths:
-                    try:
-                        iface = get_dbus_interface(device, path)
-                        if iface:
-                            if 'AcPowerSetpoint' in path:
-                                # Jaga faasideks
-                                per_phase = int(limit_watts / PHASE_COUNT)
-                                iface.SetValue(dbus.Double(float(per_phase)))
-                                logging.info(f"VEBus {device} {path} seatud: {per_phase} W")
-                                
-                                if PHASE_COUNT == 3:
-                                    # Sama ka teistele faasidele
-                                    for phase in ['L2', 'L3']:
-                                        phase_path = path.replace('L1', phase)
-                                        iface_phase = get_dbus_interface(device, phase_path)
-                                        if iface_phase:
-                                            iface_phase.SetValue(dbus.Double(float(per_phase)))
-                                            logging.info(f"VEBus {device} {phase_path} seatud: {per_phase} W")
-                                
-                            elif 'PowerLimit' in path:
-                                iface.SetValue(dbus.Int32(int(limit_watts)))
-                                logging.info(f"VEBus {device} PowerLimit seatud: {limit_watts} W")
-                            
-                            return
-                    except Exception:
-                        continue
-                        
-            except Exception:
-                continue
+        success = False
         
-        logging.error("Kõik meetodid ebaõnnestusid - ei saanud võimsuspiirangut seada")
-        
-    except Exception as e3:
-        logging.error(f"VEBus otsene käsk ebaõnnestus: {e3}")
-
-def check_ess_configuration():
-    """Kontrollib, et ESS on õigesti konfigureeritud kasutades cache'itud DBus liidest"""
-    try:
-        # Kontrolli, et Hub4 režiim on sisse lülitatud
-        iface = get_dbus_interface('com.victronenergy.settings', '/Settings/CGwacs/Hub4Mode')
-        if not iface:
-            logging.error("Ei saanud Hub4Mode liidest")
-            return False
+        try:
+            # Meetod 1: Otsene AC väljundvõimsuse piirang
+            power_limit_paths = [
+                '/Ac/PowerLimit',
+                '/Ac/Out/PowerLimit',
+                '/Settings/PowerLimit'
+            ]
             
-        hub4_mode = int(iface.GetValue())
-        
-        if hub4_mode != 3:
-            logging.warning(f"Hub4 režiim pole õigesti seadistatud (praegu: {hub4_mode}, peaks olema: 3)")
-            # Proovi automaatselt sisse lülitada
-            iface.SetValue(dbus.Int32(3))
-            logging.info("Hub4 režiim sisse lülitatud")
-        else:
-            logging.info("Hub4 režiim on õigesti konfigureeritud")
-        
-        return True
-        
-    except Exception as e:
-        logging.error(f"ESS konfiguratsiooni kontroll ebaõnnestus: {e}")
-        return False
+            for path in power_limit_paths:
+                try:
+                    iface = get_dbus_interface(device, path)
+                    if iface:
+                        iface.SetValue(dbus.Int32(int(limit_watts)))
+                        logging.info(f"Multiplus {device} {path} seatud: {limit_watts} W")
+                        success = True
+                        break
+                except Exception:
+                    continue
+            
+            if success:
+                return
+            
+            # Meetod 2: Faasipõhine piirang
+            if PHASE_COUNT == 3:
+                per_phase_limit = int(limit_watts / 3)
+                phases_set = 0
+                
+                for phase in ['L1', 'L2', 'L3']:
+                    phase_paths = [
+                        f'/Ac/Out/{phase}/PowerLimit',
+                        f'/Ac/{phase}/PowerLimit'
+                    ]
+                    
+                    for path in phase_paths:
+                        try:
+                            iface = get_dbus_interface(device, path)
+                            if iface:
+                                iface.SetValue(dbus.Int32(per_phase_limit))
+                                logging.info(f"Multiplus {device} {path} seatud: {per_phase_limit} W")
+                                phases_set += 1
+                                break
+                        except Exception:
+                            continue
+                
+                if phases_set >= 2:  # Kui vähemalt 2 faasi õnnestus
+                    logging.info(f"Faasipõhine piirang seatud: {phases_set}/3 faasi")
+                    return
+            
+            # Meetod 3: VE.Bus MaxPower seade
+            try:
+                iface = get_dbus_interface(device, '/Settings/MaxPower')
+                if iface:
+                    iface.SetValue(dbus.Int32(int(limit_watts)))
+                    logging.info(f"Multiplus {device} MaxPower seatud: {limit_watts} W")
+                    return
+            except Exception:
+                pass
+                
+            # Meetod 4: Kui on ESS režiim, kasuta Hub4 seadeid
+            try:
+                # Kontrolli, kas Hub4 on aktiivne
+                hub4_iface = get_dbus_interface('com.victronenergy.settings', '/Settings/CGwacs/Hub4Mode')
+                if hub4_iface and int(hub4_iface.GetValue()) == 3:
+                    # Kasuta ESS piiranguid
+                    ess_iface = get_dbus_interface('com.victronenergy.settings', '/Settings/CGwacs/MaxDischargePower')
+                    if ess_iface:
+                        ess_iface.SetValue(dbus.Int32(int(limit_watts)))
+                        logging.info(f"ESS MaxDischargePower seatud: {limit_watts} W")
+                        return
+            except Exception:
+                pass
+                
+        except Exception as e:
+            logging.warning(f"Seadme {device} seadmine ebaõnnestus: {e}")
+            continue
+    
+    logging.error("Kõik Multiplus piirangu meetodid ebaõnnestusid")
+
+
 
 def main():
-    logging.info("Skript käivitus.")
+    logging.info("Multiplus väljundvõimsuse piirangu skript käivitus.")
     
-    # Kontrolli ESS konfiguratsiooni
-    if not check_ess_configuration():
-        logging.error("ESS pole õigesti konfigureeritud, katkestan.")
-        return
-    
-    exported_power = get_export_power()
-    if exported_power is None:
-        logging.warning("Eksportvõimsus puudub, katkestan.")
+    # Loe Multiplus'te praegust väljundvõimsust
+    output_power, vebus_device = get_multiplus_output_power()
+    if output_power is None:
+        logging.warning("Multiplus väljundvõimsus puudub, katkestan.")
         return
 
-    # Only limit when actually exporting power (positive values)
-    # Negative values mean importing from grid, no limiting needed
-    if exported_power <= 0:
-        logging.info(f"Importimine võrgust: {exported_power} W, piiranguid ei rakenda.")
-        # Set maximum allowed output when importing
-        set_vebus_output_limit(MAX_EXPORT_LIMIT_W)
+    logging.info(f"Praegune Multiplus väljundvõimsus: {output_power} W")
+    
+    # Kontrolli, kas väljundvõimsus ületab lubatud piiri
+    if output_power <= MAX_MULTIPLUS_OUTPUT_W:
+        logging.info(f"Väljundvõimsus {output_power} W on lubatud piiri {MAX_MULTIPLUS_OUTPUT_W} W sees - piiranguid pole vaja.")
+        # Eemalda võimalikud varasemad piirangud, seades maksimaalse lubatud võimsuse
+        set_multiplus_power_limit(MAX_MULTIPLUS_OUTPUT_W, vebus_device)
         return
     
-    export = exported_power
-    allowed_output = MAX_EXPORT_LIMIT_W - export
+    # Väljundvõimsus ületab piiri - rakenda piirang
+    logging.warning(f"Väljundvõimsus {output_power} W ületab piiri {MAX_MULTIPLUS_OUTPUT_W} W!")
+    
+    # Arvuta uus piirang (väikese reserviga, et vältida kõikumist)
+    new_limit = MAX_MULTIPLUS_OUTPUT_W - 500  # 500W reserv
+    
+    if new_limit < MIN_OUTPUT_LIMIT_W:
+        new_limit = MIN_OUTPUT_LIMIT_W
+        logging.warning(f"Arvutatud piirang {new_limit} W on alla miinimumi, kasutan miinimumi: {MIN_OUTPUT_LIMIT_W} W")
 
-    if allowed_output < MIN_OUTPUT_LIMIT_W:
-        allowed_output = MIN_OUTPUT_LIMIT_W
-        logging.warning(f"Eksport {export} W ületab piiri, seatan miinimumi: {allowed_output} W")
-
-    logging.info(f"Eksport: {export} W, lubatud väljund: {allowed_output} W")
-    set_vebus_output_limit(allowed_output)
+    logging.info(f"Seatan Multiplus väljundpiirangu: {new_limit} W")
+    set_multiplus_power_limit(new_limit, vebus_device)
 
 if __name__ == "__main__":
     main()
