@@ -13,6 +13,14 @@ def get_power(path):
     except Exception:
         return 0
 
+def get_export_limit():
+    try:
+        obj = BUS.get_object('com.victronenergy.settings', '/Settings/CGwacs/AcPowerSetPoint')
+        iface = dbus.Interface(obj, 'com.victronenergy.BusItem')
+        return int(iface.GetValue())
+    except Exception:
+        return 0
+
 def set_export_limit(value):
     try:
         obj = BUS.get_object('com.victronenergy.settings', '/Settings/CGwacs/AcPowerSetPoint')

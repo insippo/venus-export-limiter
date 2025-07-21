@@ -149,7 +149,7 @@ def set_multiplus_power_limit(limit_watts, vebus_device=None):
     else:
         vebus_devices = [vebus_device]
     
-        for device in vebus_devices:
+    for device in vebus_devices:
         success = False
         
         try:
