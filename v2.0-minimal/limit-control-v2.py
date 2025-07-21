@@ -13,6 +13,16 @@ def get_power(path):
     except Exception:
         return 0
 
+def get_export_limit():
+    """Reads current AC Power SetPoint from the com.victronenergy.settings service"""
+    try:
+        obj = BUS.get_object('com.victronenergy.settings', '/Settings/CGwacs/AcPowerSetPoint')
+        iface = dbus.Interface(obj, 'com.victronenergy.BusItem')
+        value = iface.GetValue()
+        return int(value) if value is not None else None
+    except Exception:
+        return None
+
 def set_export_limit(value):
     try:
         obj = BUS.get_object('com.victronenergy.settings', '/Settings/CGwacs/AcPowerSetPoint')
