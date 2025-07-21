@@ -13,23 +13,34 @@ Parandused v2.0-s:
 - Automaatne seadmete tuvastamine
 - Turvaline paigaldus
 - Õige Multiplus väljundvõimsuse piirang
+- CLI tugi käsurealt kasutamiseks
+- get_export_limit funktsioon
 """
 
 import logging
 import subprocess
 import os
 import sys
+import argparse
 from config import MAX_GRID_EXPORT_W, PHASE_COUNT, MIN_MULTIPLUS_OUTPUT_W, MAX_POWER_CHANGE_PER_STEP, GRADUAL_ADJUSTMENT
 from dbus.mainloop.glib import DBusGMainLoop
 import dbus
 
 DBusGMainLoop(set_as_default=True)
 
+# Configure logging
 log_path = "/data/dbus-limit/limit.log"
-logging.basicConfig(filename=log_path, level=logging.INFO, format="%(asctime)s - %(message)s")
+logging.basicConfig(
+    level=logging.INFO, 
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler(log_path),
+        logging.StreamHandler()  # Also log to console when running manually
+    ]
+)
 
-# Validate configuration on startup
 def validate_config():
+    """Validate configuration on startup"""
     errors = []
     
     if not isinstance(MAX_GRID_EXPORT_W, (int, float)) or MAX_GRID_EXPORT_W <= 0:
@@ -50,8 +61,6 @@ def validate_config():
         sys.exit(1)
     
     logging.info(f"Configuration validated: MAX_GRID_EXPORT={MAX_GRID_EXPORT_W}W, PHASES={PHASE_COUNT}, MIN_MULTIPLUS_OUTPUT={MIN_MULTIPLUS_OUTPUT_W}W")
-
-validate_config()
 
 # Globaalsed muutujad
 last_limit = None
@@ -82,17 +91,28 @@ def get_dbus_interface(service, path, interface='com.victronenergy.BusItem'):
     
     return dbus_objects_cache.get(cache_key)
 
-def get_current_ess_limit():
-    """Loeb praeguse ESS piirangu kasutades cache'itud DBus liidest"""
+def get_export_limit():
+    """
+    Reads the current AC power export limit from the system settings.
+    Returns the current export setpoint or None if cannot be retrieved.
+    """
     try:
         iface = get_dbus_interface('com.victronenergy.settings', '/Settings/CGwacs/AcPowerSetPoint')
         if iface:
             value = int(iface.GetValue())
+            logging.debug(f"Current export limit: {value} W")
             return value
-        return None
+        else:
+            logging.warning("Could not get DBus interface for AcPowerSetPoint")
+            return None
     except Exception as e:
-        logging.debug(f"Ei saanud praegust ESS piirangut lugeda: {e}")
+        logging.error(f"Failed to read current export limit: {e}")
         return None
+
+def get_current_ess_limit():
+    """Loeb praeguse ESS piirangu kasutades cache'itud DBus liidest"""
+    # This function is kept for backward compatibility, but now calls get_export_limit()
+    return get_export_limit()
 
 def get_grid_export_power():
     """Loeb võrku eksporditavat kogu võimsust (PV + Multiplus)"""
@@ -118,6 +138,24 @@ def get_grid_export_power():
     
     logging.error("Ei leidnud ühtegi töötavat grid meter seadet")
     return None, None
+
+def set_export_limit(limit_watts):
+    """
+    Sets the AC power export limit using the ESS system settings.
+    This is more direct than manipulating individual Multiplus settings.
+    """
+    try:
+        iface = get_dbus_interface('com.victronenergy.settings', '/Settings/CGwacs/AcPowerSetPoint')
+        if iface:
+            iface.SetValue(dbus.Int32(int(limit_watts)))
+            logging.info(f"Export limit set to: {limit_watts} W")
+            return True
+        else:
+            logging.error("Could not get DBus interface for AcPowerSetPoint")
+            return False
+    except Exception as e:
+        logging.error(f"Failed to set export limit: {e}")
+        return False
 
 def set_multiplus_power_limit(limit_watts, vebus_device=None):
     """
@@ -149,7 +187,8 @@ def set_multiplus_power_limit(limit_watts, vebus_device=None):
     else:
         vebus_devices = [vebus_device]
     
-        for device in vebus_devices:
+    # Fixed indentation error here
+    for device in vebus_devices:
         success = False
         
         try:
@@ -257,14 +296,15 @@ def remove_multiplus_limits():
     last_limit = None
     logging.info("Multiplus piirangud eemaldatud - vaba töö lubatud")
 
-def main():
+def run_limiter():
+    """Main limiter logic - extracted for CLI usage"""
     logging.info("Grid ekspordi piirangu skript käivitus.")
     
     # Loe võrku eksporditavat kogu võimsust (PV + Multiplus)
     grid_power, grid_device = get_grid_export_power()
     if grid_power is None:
         logging.warning("Grid eksportvõimsus puudub, katkestan.")
-        return
+        return False
 
     logging.info(f"Praegune grid eksportvõimsus: {grid_power} W")
     
@@ -273,14 +313,14 @@ def main():
         logging.info(f"Import võrgust: {grid_power} W - piiranguid pole vaja, eemaldan kõik piirangud.")
         # Eemalda kõik piirangud - lase Multiplus'el vabalt töötada
         remove_multiplus_limits()
-        return
+        return True
     
     # Kontrolli, kas grid eksport ületab lubatud piiri
     if grid_power <= MAX_GRID_EXPORT_W:
         logging.info(f"Grid eksport {grid_power} W on lubatud piiri {MAX_GRID_EXPORT_W} W sees - piiranguid pole vaja.")
         # Eemalda võimalikud varasemad piirangud
         remove_multiplus_limits()
-        return
+        return True
     
     # Grid eksport ületab piiri - vähenda Multiplus väljundit
     logging.warning(f"Grid eksport {grid_power} W ületab piiri {MAX_GRID_EXPORT_W} W!")
@@ -311,10 +351,66 @@ def main():
     # Kontroll: kas piirang on mõistlik
     if new_limit >= current_limit:
         logging.info("Arvutatud piirang on suurem kui praegune - ei muuda midagi")
-        return
+        return True
 
     logging.info(f"Vähenda Multiplus piirangut: {current_limit} W → {new_limit} W (excess: {excess_power} W)")
     set_multiplus_power_limit(new_limit)
+    return True
+
+def main():
+    """Main function with CLI support"""
+    parser = argparse.ArgumentParser(
+        description='Venus Export Limiter - Victron Energy system export power control'
+    )
+    parser.add_argument('--get', action='store_true', 
+                       help='Get current export limit')
+    parser.add_argument('--set', type=int, metavar='WATTS',
+                       help='Set export limit to specified watts')
+    parser.add_argument('--run', action='store_true',
+                       help='Run the main limiter logic (default if no other args)')
+    parser.add_argument('--remove-limits', action='store_true',
+                       help='Remove all export limits')
+    parser.add_argument('--verbose', '-v', action='store_true',
+                       help='Enable verbose logging')
+    
+    args = parser.parse_args()
+    
+    # Set logging level based on verbose flag
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+    
+    # Validate configuration
+    validate_config()
+    
+    # Handle CLI commands
+    if args.get:
+        limit = get_export_limit()
+        if limit is not None:
+            logging.info(f"Current export limit: {limit} W")
+            print(f"{limit}")
+        else:
+            logging.error("Could not read export limit")
+            sys.exit(1)
+    
+    elif args.set is not None:
+        if args.set < 0:
+            logging.error("Export limit must be positive")
+            sys.exit(1)
+        
+        success = set_export_limit(args.set)
+        if success:
+            logging.info(f"Export limit set to: {args.set} W")
+        else:
+            logging.error("Failed to set export limit")
+            sys.exit(1)
+    
+    elif args.remove_limits:
+        remove_multiplus_limits()
+        logging.info("All export limits removed")
+    
+    else:
+        # Default: run the main limiter logic
+        run_limiter()
 
 if __name__ == "__main__":
     main()
